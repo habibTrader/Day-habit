@@ -1,0 +1,500 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ردیاب عادت‌های روزانه</title>
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: Tahoma, Arial, sans-serif; background:#f4f6f8; margin:0; color:#222; }
+  header { background:#2b6cb0; color:#fff; padding:14px 20px; }
+  header h1 { margin:0; font-size:20px; }
+  nav { display:flex; gap:6px; padding:10px 20px; background:#fff; border-bottom:1px solid #ddd; flex-wrap:wrap; }
+  nav button { padding:8px 14px; border:1px solid #2b6cb0; background:#fff; color:#2b6cb0; border-radius:6px; cursor:pointer; }
+  nav button.active { background:#2b6cb0; color:#fff; }
+  main { padding:20px; max-width:950px; margin:auto; }
+  .card { background:#fff; border-radius:8px; padding:16px; margin-bottom:16px; box-shadow:0 1px 3px rgba(0,0,0,.08); }
+  input[type=text], input[type=number], select { padding:8px; border:1px solid #bbb; border-radius:6px; }
+  input[type=text] { width:240px; }
+  input[type=number] { width:80px; }
+  button.primary { padding:8px 14px; background:#2b6cb0; color:#fff; border:none; border-radius:6px; cursor:pointer; }
+  button.danger { padding:4px 10px; background:#e53e3e; color:#fff; border:none; border-radius:6px; cursor:pointer; }
+  button.small { padding:4px 10px; border:1px solid #bbb; background:#fff; border-radius:6px; cursor:pointer; }
+  button.round { width:32px; height:32px; border-radius:50%; border:1px solid #2b6cb0; background:#fff; color:#2b6cb0; font-size:18px; cursor:pointer; }
+  table { width:100%; border-collapse:collapse; font-size:14px; }
+  th, td { border-bottom:1px solid #eee; padding:8px; text-align:center; }
+  th:first-child, td:first-child { text-align:right; }
+  .row { display:flex; justify-content:space-between; align-items:center; padding:10px 0; border-bottom:1px solid #eee; gap:10px; flex-wrap:wrap; }
+  .row.off { opacity:.55; }
+  .stat { display:inline-block; margin:6px 16px 6px 0; }
+  .stat b { font-size:22px; color:#2b6cb0; }
+  .bar { height:10px; background:#e2e8f0; border-radius:5px; overflow:hidden; }
+  .bar > div { height:100%; background:#48bb78; }
+  .muted { color:#777; font-size:13px; }
+  canvas { width:100%; max-width:900px; display:block; margin:8px auto; }
+</style>
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#2b6cb0">
+<link rel="icon" href="icon.svg">
+<meta name="apple-mobile-web-app-capable" content="yes">
+</head>
+<body>
+<header><h1>ردیاب عادت‌های روزانه</h1></header>
+<nav>
+  <button data-tab="today" class="active">امروز</button>
+  <button data-tab="habits">مدیریت عادت‌ها</button>
+  <button data-tab="week">خلاصه هفته</button>
+  <button data-tab="month">خلاصه ماه</button>
+  <button data-tab="calendar">تقویم</button>
+  <button data-tab="data">پشتیبان‌گیری</button>
+</nav>
+<main>
+  <div id="today" class="tab"></div>
+  <div id="habits" class="tab" hidden></div>
+  <div id="week" class="tab" hidden></div>
+  <div id="month" class="tab" hidden></div>
+  <div id="calendar" class="tab" hidden></div>
+  <div id="data" class="tab" hidden></div>
+</main>
+
+<script>
+// ---------- داده و ذخیره ----------
+// habit: {id, name, type: 'bool'|'count'|'interval', target, start}
+//   bool     = روزانه، تیک‌زدنی
+//   count    = شمارشی، هدف target بار در روز
+//   interval = دوره‌ای، هر target روز یک بار (از تاریخ start)
+// log[dateKey][habitId] = عدد (برای bool و interval: 1 یعنی انجام شد)
+const KEY = "habitTrackerV2";
+let state = JSON.parse(localStorage.getItem(KEY) || localStorage.getItem("habitTrackerV1") || '{"habits":[],"log":{}}');
+state.habits.forEach(h => { h.type = h.type || "bool"; h.target = h.target ?? 1; h.start = h.start || dateKey(new Date()); });
+const chartData = {};
+
+function save() { localStorage.setItem(KEY, JSON.stringify(state)); }
+function pad(n) { return String(n).padStart(2, "0"); }
+function dateKey(d) { return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`; }
+function parseKey(k) { const [y,m,d] = k.split("-").map(Number); return new Date(y, m-1, d); }
+function addDays(d, n) { const x = new Date(d); x.setDate(x.getDate()+n); return x; }
+function utcDiff(a, b) {
+  const [y1,m1,d1] = a.split("-").map(Number), [y2,m2,d2] = b.split("-").map(Number);
+  return Math.round((Date.UTC(y2,m2-1,d2) - Date.UTC(y1,m1-1,d1)) / 86400000);
+}
+function esc(s) { return String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
+const WEEKDAYS = ["یکشنبه","دوشنبه","سه‌شنبه","چهارشنبه","پنجشنبه","جمعه","شنبه"];
+const JMONTHS = ["فروردین","اردیبهشت","خرداد","تیر","مرداد","شهریور","مهر","آبان","آذر","دی","بهمن","اسفند"];
+// تبدیل تاریخ میلادی به شمسی (الگوریتم مستقل از مرورگر)
+function toJalali(gd) {
+  const gdm = [0,31,59,90,120,151,181,212,243,273,304,334];
+  const gy = gd.getFullYear(), gm = gd.getMonth() + 1, gday = gd.getDate();
+  const gy2 = gm > 2 ? gy + 1 : gy;
+  let days = 355666 + 365*gy + Math.floor((gy2+3)/4) - Math.floor((gy2+99)/100) + Math.floor((gy2+399)/400) + gday + gdm[gm-1];
+  let jy = -1595 + 33*Math.floor(days/12053); days %= 12053;
+  jy += 4*Math.floor(days/1461); days %= 1461;
+  if (days > 365) { jy += Math.floor((days-1)/365); days = (days-1) % 365; }
+  let jm, jd;
+  if (days < 186) { jm = 1 + Math.floor(days/31); jd = 1 + days % 31; }
+  else { jm = 7 + Math.floor((days-186)/30); jd = 1 + (days-186) % 30; }
+  return { y: jy, m: jm, d: jd };
+}
+// تاریخ میلادیِ روز اول یک ماه شمسی
+function jFirst(jy, jm) {
+  let g = new Date(jy + 621, 2, 21 + (jm - 1) * 30);
+  for (let i = 0; i < 80; i++) {
+    const j = toJalali(g);
+    if (j.y === jy && j.m === jm && j.d === 1) break;
+    if (j.y < jy || (j.y === jy && (j.m < jm || (j.m === jm && j.d > 1)))) g = addDays(g, 1);
+    else g = addDays(g, -1);
+  }
+  return g;
+}
+function jMonthLen(jy, jm) { return Math.round((jFirst(jy + (jm === 12 ? 1 : 0), jm === 12 ? 1 : jm + 1) - jFirst(jy, jm)) / 86400000); }
+function jFull(d) { const j = toJalali(d); return `${j.d} ${JMONTHS[j.m-1]} ${j.y}`; }
+function jNum(d) { const j = toJalali(d); return `${j.y}/${j.m}/${j.d}`; }
+function jDM(d) { const j = toJalali(d); return `${j.d}/${j.m}`; }
+function jMonthTitle(jy, jm) { return `${JMONTHS[jm-1]} ${jy}`; }
+const WEEKDAYS_SHORT = ["ی","د","س","چ","پ","ج","ش"];
+
+function getVal(key, id) {
+  const v = state.log[key] && state.log[key][id];
+  return v === true ? 1 : (Number(v) || 0);
+}
+function setVal(key, id, v) {
+  if (!state.log[key]) state.log[key] = {};
+  if (v <= 0) delete state.log[key][id]; else state.log[key][id] = v;
+  save(); render();
+}
+function findHabit(id) { return state.habits.find(h => h.id === id); }
+function isDue(h, date) {
+  if (dateKey(date) < h.start) return false; // قبل از تاریخ شروع نوبت نیست
+  if (h.type !== "interval") return true;
+  const diff = utcDiff(h.start, dateKey(date));
+  return diff >= 0 && diff % h.target === 0;
+}
+function nextDue(h) {
+  let d = new Date();
+  for (let i = 0; i <= h.target; i++) { if (isDue(h, d)) return d; d = addDays(d, 1); }
+  return d;
+}
+// نسبت انجام یک عادت در یک روز: 0 تا 1
+function ratio(key, h) {
+  const v = getVal(key, h.id);
+  if (h.type === "limit") {
+    // ترک تدریجی: سقف هفتگی. نسبت بر اساس جمع مصرف از اول هفته تا همین روز
+    const used = weekUsed(key, h), W = h.target;
+    if (W <= 0) return used === 0 ? 1 : 0;
+    return used <= W ? 1 : Math.max(0, 1 - (used - W) / W);
+  }
+  if (h.type === "count") return Math.min(1, v / h.target);
+  return v >= 1 ? 1 : 0;
+}
+// جمع مصرف عادت از شنبه (شروع هفته) تا روز key
+function weekUsed(key, h) {
+  let d = parseKey(key), sum = 0;
+  const back = (d.getDay() + 1) % 7;
+  for (let i = back; i >= 0; i--) sum += getVal(dateKey(addDays(d, -i)), h.id);
+  return sum;
+}
+function typeLabel(h) {
+  if (h.type === "limit") return `حداکثر ${h.target} سری در هفته` + (h.baseline != null ? ` (شروع: ${h.baseline} در هفته)` : "");
+  if (h.type === "count") return `روزانه ${h.target} بار`;
+  if (h.type === "interval") return `هر ${h.target} روز یک بار`;
+  return "روزانه";
+}
+
+// ---------- امروز ----------
+function renderToday() {
+  const t = new Date(), key = dateKey(t);
+  let html = `<div class="card"><h3>امروز: ${WEEKDAYS[t.getDay()]} ${jFull(t)}</h3>`;
+  if (!state.habits.length) {
+    html += `<p class="muted">هنوز عادتی تعریف نکرده‌ای. از تب «مدیریت عادت‌ها» اضافه کن.</p></div>`;
+  } else {
+    const dues = state.habits.filter(h => isDue(h, t));
+    const pct = dues.length ? Math.round(dues.reduce((s,h) => s + ratio(key,h), 0) / dues.length * 100) : 0;
+    html += `<p>پیشرفت امروز: ${pct}٪</p><div class="bar"><div style="width:${pct}%"></div></div><br>`;
+    state.habits.forEach(h => {
+      const v = getVal(key, h.id);
+      if (!isDue(h, t)) {
+        html += `<div class="row off"><span>${esc(h.name)} <span class="muted">(${typeLabel(h)})</span></span>
+                 <span class="muted">امروز نوبت نیست؛ نوبت بعدی: ${jFull(nextDue(h))}</span></div>`;
+      } else if (h.type === "limit") {
+        const wk = weekUsed(key, h);
+        html += `<div class="row"><span>${esc(h.name)} <span class="muted">(حداکثر ${h.target} در هفته)</span></span>
+                 <span><button class="round" onclick="inc('${h.id}',-1)">−</button>
+                 <span style="margin:0 10px">امروز: <b>${v}</b> | این هفته: <b style="color:${wk > h.target ? '#e53e3e' : '#2b6cb0'}">${wk} / ${h.target}</b></span>
+                 <button class="round" onclick="inc('${h.id}',1)">+</button></span></div>`;
+      } else if (h.type === "count") {
+        html += `<div class="row"><span>${esc(h.name)} <span class="muted">(هدف: ${h.target})</span></span>
+                 <span><button class="round" onclick="inc('${h.id}',-1)">−</button>
+                 <b style="margin:0 10px">${v} / ${h.target}</b>
+                 <button class="round" onclick="inc('${h.id}',1)">+</button></span></div>`;
+      } else {
+        html += `<label class="row" style="cursor:pointer"><span>
+                 <input type="checkbox" ${v>=1?"checked":""} onchange="toggle('${h.id}')">
+                 <span style="margin-right:6px;${v>=1?'text-decoration:line-through;color:#888':''}">${esc(h.name)}</span>
+                 ${h.type==="interval" ? `<span class="muted">(${typeLabel(h)})</span>` : ""}</span></label>`;
+      }
+    });
+    html += `</div>`;
+  }
+  document.getElementById("today").innerHTML = html;
+}
+function toggle(id) {
+  const key = dateKey(new Date());
+  setVal(key, id, getVal(key, id) >= 1 ? 0 : 1);
+}
+function inc(id, delta) {
+  const key = dateKey(new Date());
+  setVal(key, id, Math.max(0, getVal(key, id) + delta));
+}
+
+// ---------- مدیریت عادت‌ها ----------
+function renderHabits() {
+  let html = `<div class="card"><h3>افزودن عادت جدید</h3>
+    <p><input type="text" id="newHabit" placeholder="مثلاً نوشیدن آب" maxlength="60"></p>
+    <p>نوع:
+      <select id="newType" onchange="onTypeChange(this.value)">
+        <option value="bool">روزانه (انجام / انجام نشده)</option>
+        <option value="count">شمارشی (چند بار در روز)</option>
+        <option value="interval">دوره‌ای (هر چند روز یک بار)</option>
+        <option value="limit">ترک تدریجی (کاهش مصرف)</option>
+      </select></p>
+    <p id="targetBox" hidden><span id="targetLabel">عدد هدف:</span> <input type="number" id="newTarget" min="1" value="1"></p>
+    <p id="baseBox" hidden>مصرف فعلی در هفته (برای مقایسه): <input type="number" id="newBase" min="0" value="14"></p>
+    <p>تاریخ شروع: <input type="date" id="newStart" value="${dateKey(new Date())}"></p>
+    <button class="primary" onclick="addHabit()">افزودن</button></div>
+    <div class="card"><h3>عادت‌های فعلی</h3>`;
+  if (!state.habits.length) html += `<p class="muted">عادتی وجود ندارد.</p>`;
+  state.habits.forEach(h => {
+    html += `<div class="row"><span>${esc(h.name)} <span class="muted">(${typeLabel(h)})</span></span>
+      <span><button class="small" onclick="setStart('${h.id}')">تاریخ شروع</button> <button class="small" onclick="renameHabit('${h.id}')">ویرایش</button>
+      <button class="danger" onclick="deleteHabit('${h.id}')">حذف</button></span></div>`;
+  });
+  html += `</div>`;
+  document.getElementById("habits").innerHTML = html;
+}
+function addHabit() {
+  const name = document.getElementById("newHabit").value.trim();
+  if (!name) return;
+  const type = document.getElementById("newType").value;
+  const target = type === "bool" ? 1 : Math.max(type === "limit" ? 0 : 1, parseInt(document.getElementById("newTarget").value) || (type === "limit" ? 0 : 1));
+  const baseline = type === "limit" ? Math.max(0, parseInt(document.getElementById("newBase").value) || 0) : null;
+  state.habits.push({ id: "h" + Date.now(), name, type, target, baseline, start: document.getElementById("newStart").value || dateKey(new Date()) });
+  save(); render();
+}
+function onTypeChange(type) {
+  document.getElementById("targetBox").hidden = type === "bool";
+  document.getElementById("baseBox").hidden = type !== "limit";
+  document.getElementById("targetLabel").textContent = type === "limit" ? "حداکثر سری مجاز در هفته:" : "عدد هدف:";
+  document.getElementById("newStart").value = type === "limit" ? nextSaturday() : dateKey(new Date());
+}
+// شنبهٔ آینده (اگر امروز شنبه باشد، هفتهٔ بعد)
+function nextSaturday() {
+  return dateKey(addDays(new Date(), ((6 - new Date().getDay() + 7) % 7) || 7));
+}
+function setStart(id) {
+  const h = findHabit(id);
+  const s = prompt("تاریخ شروع (YYYY-MM-DD):", h.start);
+  if (!s) return;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s.trim())) { alert("فرمت تاریخ باید YYYY-MM-DD باشد"); return; }
+  h.start = s.trim(); save(); render();
+}
+function renameHabit(id) {
+  const h = findHabit(id);
+  const n = prompt("نام جدید:", h.name);
+  if (n && n.trim()) { h.name = n.trim(); save(); render(); }
+}
+function deleteHabit(id) {
+  if (!confirm("این عادت و سوابقش حذف شود؟")) return;
+  state.habits = state.habits.filter(h => h.id !== id);
+  Object.values(state.log).forEach(day => delete day[id]);
+  save(); render();
+}
+
+// ---------- آمار و خلاصه ----------
+function stats(start, end) {
+  const days = [];
+  for (let d = new Date(start.getFullYear(), start.getMonth(), start.getDate());
+       dateKey(d) <= dateKey(end); d = addDays(d, 1)) days.push(new Date(d));
+
+  const perHabit = state.habits.map(h => {
+    let due = 0, sum = 0, full = 0, used = 0;
+    days.forEach(d => {
+      if (!isDue(h, d)) return;
+      due++;
+      const k = dateKey(d);
+      const r = ratio(k, h);
+      sum += r; used += getVal(k, h.id); if (r >= 1) full++;
+    });
+    return { name: h.name, due, full, pct: due ? Math.round(sum / due * 100) : 0, avg: due ? (used / due).toFixed(1) : "-", limit: h.type === "limit" };
+  });
+
+  const dailyVals = [];
+  let tot = 0, totDue = 0, perfect = 0, best = 0, streak = 0;
+  days.forEach(d => {
+    const k = dateKey(d);
+    const dues = state.habits.filter(h => isDue(h, d));
+    if (!dues.length) { dailyVals.push(null); return; }
+    const s = dues.reduce((a, h) => a + ratio(k, h), 0);
+    tot += s; totDue += dues.length;
+    const p = Math.round(s / dues.length * 100);
+    dailyVals.push(p);
+    if (p === 100) { perfect++; streak++; best = Math.max(best, streak); } else streak = 0;
+  });
+  return { days, perHabit, dailyVals, avg: totDue ? Math.round(tot / totDue * 100) : 0, perfect, best };
+}
+
+function summaryHTML(prefix, title, start, end, rangeLabel, labelFn) {
+  if (!state.habits.length) return `<div class="card"><p class="muted">ابتدا عادت تعریف کن.</p></div>`;
+  const s = stats(start, end);
+  chartData[prefix] = {
+    daily: { labels: s.days.map(labelFn), vals: s.dailyVals },
+    habits: { labels: s.perHabit.map(p => p.name), vals: s.perHabit.map(p => p.pct) }
+  };
+  let html = `<div class="card"><h3>${title}</h3><p class="muted">${rangeLabel}</p>
+    <div class="stat"><b>${s.avg}٪</b><br>میانگین انجام</div>
+    <div class="stat"><b>${s.perfect}</b><br>روز کامل</div>
+    <div class="stat"><b>${s.best}</b><br>بیشترین روز متوالی کامل</div></div>`;
+  html += `<div class="card"><h3>نمودار روزانه (درصد انجام)</h3>
+    <canvas id="${prefix}-daily" width="900" height="280"></canvas></div>`;
+  html += `<div class="card"><h3>عملکرد هر عادت</h3>
+    <canvas id="${prefix}-habits" width="900" height="${60 + 34 * Math.max(1, state.habits.length)}"></canvas>
+    <table><tr><th>عادت</th><th>روز موعددار</th><th>کامل انجام شده</th><th>درصد</th><th>میانگین مصرف روزانه</th></tr>`;
+  s.perHabit.forEach(p => {
+    html += `<tr><td>${esc(p.name)}</td><td>${p.due}</td><td>${p.full}</td><td>${p.pct}٪</td><td>${p.limit ? p.avg : "-"}</td></tr>`;
+  });
+  html += `</table></div>`;
+  return html;
+}
+
+function renderWeek() {
+  const t = new Date();
+  const sat = addDays(t, -((t.getDay() + 1) % 7));
+  const fri = addDays(sat, 6);
+  document.getElementById("week").innerHTML = summaryHTML("week", "خلاصه این هفته", sat, fri,
+    `از ${jFull(sat)} تا ${jFull(fri)}`,
+    d => WEEKDAYS_SHORT[d.getDay()] + " " + jDM(d));
+}
+function renderMonth() {
+  const t = toJalali(new Date());
+  const first = jFirst(t.y, t.m);
+  const last = addDays(jFirst(t.m === 12 ? t.y + 1 : t.y, t.m === 12 ? 1 : t.m + 1), -1);
+  document.getElementById("month").innerHTML = summaryHTML("month", "خلاصه این ماه", first, last,
+    jMonthTitle(t.y, t.m),
+    d => String(d.getDate()));
+}
+
+// ---------- تقویم ----------
+let calJ = toJalali(new Date()), calSel = dateKey(new Date());
+function calMove(n) {
+  let y = calJ.y, m = calJ.m + n;
+  while (m < 1) { m += 12; y--; }
+  while (m > 12) { m -= 12; y++; }
+  calJ = { y, m }; renderCalendar();
+}
+function calPick(k) { calSel = k; renderCalendar(); }
+function dayPct(d) {
+  const k = dateKey(d);
+  const dues = state.habits.filter(h => isDue(h, d));
+  if (!dues.length) return null;
+  return Math.round(dues.reduce((s,h) => s + ratio(k,h), 0) / dues.length * 100);
+}
+function renderCalendar() {
+  const first = jFirst(calJ.y, calJ.m), total = jMonthLen(calJ.y, calJ.m);
+  const lead = (first.getDay() + 1) % 7; // شنبه ستون اول
+  const todayK = dateKey(new Date());
+  let html = `<div class="card"><div class="row"><button class="small" onclick="calMove(1)">ماه بعد ›</button>
+    <h3>${jMonthTitle(calJ.y, calJ.m)}</h3>
+    <button class="small" onclick="calMove(-1)">‹ ماه قبل</button></div>`;
+  html += `<div style="display:grid;grid-template-columns:repeat(7,1fr);gap:4px;text-align:center">`;
+  [6,0,1,2,3,4,5].forEach(i => html += `<div class="muted">${WEEKDAYS_SHORT[i]}</div>`);
+  for (let i = 0; i < lead; i++) html += `<div></div>`;
+  for (let n = 1; n <= total; n++) {
+    const d = addDays(first, n - 1), k = dateKey(d);
+    const p = k > todayK ? null : dayPct(d);
+    const bg = p === null ? "#f5f5f5" : p >= 80 ? "#9ae6b4" : p >= 40 ? "#faf089" : "#feb2b2";
+    const border = k === calSel ? "2px solid #2b6cb0" : "1px solid #ddd";
+    html += `<div onclick="calPick('${k}')" style="cursor:pointer;padding:6px 0;border-radius:6px;background:${bg};border:${border}">${toJalali(d).d}<br><small>${p === null ? "" : p + "٪"}</small></div>`;
+  }
+  html += `</div><p class="muted">رنگ‌ها: سبز یعنی انجام عالی، زرد متوسط، قرمز ضعیف</p></div>`;
+
+  const sd = parseKey(calSel);
+  html += `<div class="card"><h3>جزئیات ${WEEKDAYS[sd.getDay()]} ${jFull(sd)}</h3>`;
+  if (!state.habits.length) html += `<p class="muted">عادتی تعریف نشده.</p>`;
+  state.habits.forEach(h => {
+    const v = getVal(calSel, h.id);
+    let info;
+    if (calSel < h.start) info = `<span class="muted">قبل از شروع</span>`;
+    else if (!isDue(h, sd)) info = `<span class="muted">نوبت نیست</span>`;
+    else if (h.type === "count") info = `${v} از ${h.target}`;
+    else if (h.type === "limit") info = `مصرف این روز: ${v} | جمع هفته تا این روز: ${weekUsed(calSel, h)} از ${h.target}`;
+    else info = v >= 1 ? "✅ انجام شد" : "❌ انجام نشد";
+    html += `<div class="row"><span>${esc(h.name)}</span><span>${info}</span></div>`;
+  });
+  html += `</div>`;
+  document.getElementById("calendar").innerHTML = html;
+}
+
+// ---------- رسم نمودار (بدون کتابخانه) ----------
+function drawBars(c, labels, vals) {
+  const ctx = c.getContext("2d"), W = c.width, H = c.height;
+  const top = 20, bottom = H - 40, left = 40, right = W - 10;
+  ctx.clearRect(0, 0, W, H);
+  ctx.font = "12px Tahoma"; ctx.textAlign = "right"; ctx.fillStyle = "#777";
+  [0, 50, 100].forEach(g => {
+    const y = bottom - g / 100 * (bottom - top);
+    ctx.strokeStyle = "#e2e8f0"; ctx.beginPath(); ctx.moveTo(left, y); ctx.lineTo(right, y); ctx.stroke();
+    ctx.fillText(g + "%", left - 5, y + 4);
+  });
+  const n = labels.length || 1, bw = (right - left) / n;
+  labels.forEach((lab, i) => {
+    const x = left + i * bw + bw * 0.15, w = bw * 0.7, v = vals[i];
+    ctx.textAlign = "center"; ctx.fillStyle = "#555";
+    ctx.fillText(lab, x + w / 2, bottom + 16);
+    if (v === null) { ctx.fillStyle = "#aaa"; ctx.fillText("-", x + w / 2, bottom - 6); return; }
+    const h = v / 100 * (bottom - top);
+    ctx.fillStyle = v >= 100 ? "#48bb78" : "#2b6cb0";
+    ctx.fillRect(x, bottom - h, w, h);
+    ctx.fillStyle = "#333"; ctx.fillText(v + "%", x + w / 2, bottom - h - 4);
+  });
+}
+function drawHBars(c, labels, vals) {
+  const ctx = c.getContext("2d"), W = c.width, H = c.height;
+  ctx.clearRect(0, 0, W, H);
+  const labelW = 200, left = labelW + 10, right = W - 60;
+  const rowH = (H - 20) / Math.max(1, labels.length);
+  ctx.font = "13px Tahoma";
+  labels.forEach((lab, i) => {
+    const y = 10 + i * rowH, v = vals[i];
+    ctx.textAlign = "right"; ctx.fillStyle = "#333";
+    ctx.fillText(lab, labelW, y + rowH / 2 + 5);
+    ctx.fillStyle = "#e2e8f0"; ctx.fillRect(left, y + rowH / 2 - 9, right - left, 18);
+    ctx.fillStyle = v >= 100 ? "#48bb78" : "#2b6cb0";
+    ctx.fillRect(left, y + rowH / 2 - 9, (right - left) * v / 100, 18);
+    ctx.textAlign = "left"; ctx.fillStyle = "#333";
+    ctx.fillText(v + "%", right + 6, y + rowH / 2 + 5);
+  });
+}
+function drawCharts() {
+  Object.keys(chartData).forEach(p => {
+    const d = document.getElementById(p + "-daily"), h = document.getElementById(p + "-habits");
+    if (d) drawBars(d, chartData[p].daily.labels, chartData[p].daily.vals);
+    if (h && chartData[p].habits.labels.length) drawHBars(h, chartData[p].habits.labels, chartData[p].habits.vals);
+  });
+}
+
+// ---------- پشتیبان ----------
+function renderData() {
+  document.getElementById("data").innerHTML = `
+    <div class="card"><h3>پشتیبان‌گیری و بازیابی</h3>
+      <p class="muted">داده‌ها فقط در همین مرورگر ذخیره می‌شوند. قبل از پاک کردن مرورگر یا تغییر سیستم، فایل پشتیبان بگیر.</p>
+      <button class="primary" onclick="exportJSON()">دانلود پشتیبان (JSON)</button>
+      <button class="primary" onclick="exportCSV()">خروجی Excel (CSV)</button>
+      <hr>
+      <input type="file" id="importFile" accept=".json" onchange="importJSON(event)">
+    </div>`;
+}
+function download(name, content, type) {
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([content], {type}));
+  a.download = name; a.click();
+}
+function exportJSON() {
+  download(`habits-backup-${dateKey(new Date())}.json`, JSON.stringify(state, null, 2), "application/json");
+}
+function exportCSV() {
+  const keys = Object.keys(state.log).sort();
+  let csv = "\uFEFFتاریخ," + state.habits.map(h => h.name).join(",") + "\n";
+  keys.forEach(k => { csv += k + "," + state.habits.map(h => getVal(k, h.id)).join(",") + "\n"; });
+  download(`habits-${dateKey(new Date())}.csv`, csv, "text/csv;charset=utf-8");
+}
+function importJSON(e) {
+  const f = e.target.files[0]; if (!f) return;
+  const r = new FileReader();
+  r.onload = () => {
+    try {
+      const data = JSON.parse(r.result);
+      if (!Array.isArray(data.habits) || typeof data.log !== "object") throw new Error();
+      if (!confirm("داده‌های فعلی با فایل پشتیبان جایگزین شوند؟")) return;
+      state = data; state.habits.forEach(h => { h.type = h.type || "bool"; h.target = h.target ?? 1; h.start = h.start || dateKey(new Date()); });
+      save(); render(); alert("بازیابی انجام شد.");
+    } catch { alert("فایل نامعتبر است."); }
+  };
+  r.readAsText(f);
+}
+
+// ---------- ناوبری ----------
+function render() {
+  renderToday(); renderHabits(); renderWeek(); renderMonth(); renderCalendar(); renderData();
+  drawCharts();
+}
+document.querySelectorAll("nav button").forEach(b => b.addEventListener("click", () => {
+  document.querySelectorAll("nav button").forEach(x => x.classList.remove("active"));
+  document.querySelectorAll(".tab").forEach(x => x.hidden = true);
+  b.classList.add("active");
+  document.getElementById(b.dataset.tab).hidden = false;
+  drawCharts();
+}));
+render();
+</script>
+<script>if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js");</script>
+</body>
+</html>
