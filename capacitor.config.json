@@ -1,0 +1,8 @@
+{
+	"appId": "com.local.habittracker",
+	"appName": "ردیابی عادت",
+	"webDir": "www",
+	"server": {
+		"androidScheme": "https"
+	}
+}
